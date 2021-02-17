@@ -1,51 +1,75 @@
 #include "NamedPipeServer.h"
 
-void NamedPipeServer::run()
+bool NamedPipeServer::SecureClientQueue::try_pop(std::shared_ptr<NamedPipe> &outClient)
 {
-	NamedPipe* client;
-	_pipe=new NamedPipe(_name, 1);
+	std::lock_guard<std::mutex> guard(_queueLock);
+	if (!empty())
+	{
+		outClient = Base::front();
+		Base::pop();
+		return true;
+	}
+	return false;
+}
+
+void NamedPipeServer::SecureClientQueue::push(std::shared_ptr<NamedPipe> client)
+{
+	std::lock_guard<std::mutex> guard(_queueLock);
+	Base::push(client);
+}
+
+void NamedPipeServer::SecureClientQueue::clear()
+{
+	std::lock_guard<std::mutex> guard(_queueLock);
+	while (!Base::empty())
+		Base::pop();
+}
+
+void NamedPipeServer::run(NamedPipeServer * pipeServer)
+{
+	std::unique_ptr<NamedPipe> server(new NamedPipe(pipeServer->_name, true));
 	try
 	{
-		_pipe->ConnectOrOpen();
+		server->ConnectOrOpen();
 	}
-	catch(const std::exception& e)
+	catch (const std::exception& e)
 	{
 	}
-	while(_active)
+	while (pipeServer->_active)
 	{
 		try
 		{
-			client=_pipe->WaitForConnection(1000);
-			if(client!=NULL)
-				_clients.push(client);
+			std::shared_ptr<NamedPipe> client(server->WaitForConnection(1000));
+			if (client != NULL)
+			{
+				pipeServer->_clients.push(client);
+			}
 		}
-		catch(const std::exception& e)
+		catch (const std::exception& e)
 		{
 		}
-		catch(...)
+		catch (...)
 		{
 		}
 	}
-	delete _pipe;
+	server->Close(); // Don't rely on the destructor
 }
 
 void NamedPipeServer::Start()
 {
-	_active=true;
+	_active = true;
 	startWorkers();
 }
 
-void NamedPipeServer::workerProc()
+void NamedPipeServer::workerProc(NamedPipeServer * pipeServer)
 {
-	NamedPipe* client;
-	while(_active)
+	std::shared_ptr<NamedPipe> client = nullptr;
+	while (pipeServer->_active)
 	{
-		if(_clients.try_pop(client))
-		{
-			handleClient(client);
-		}
-		else
-			boost::this_thread::sleep(boost::posix_time::milliseconds(100));
+		client = nullptr;
+		if (pipeServer->_clients.try_pop(client))
+			pipeServer->handleClient(client);
+//		Sleep(1);
 	}
 }
 
@@ -53,39 +77,29 @@ void NamedPipeServer::startWorkers()
 {
 	for (size_t i = 0; i < _thread_pool_size; ++i)
 	{
-		boost::shared_ptr<boost::thread> thread(new boost::thread(boost::bind(&NamedPipeServer::workerProc, this)));
+		std::shared_ptr<std::thread> thread(new std::thread(&NamedPipeServer::workerProc, this));
 		_threads.push_back(thread);
 	}
-	boost::shared_ptr<boost::thread> dispatcher(new boost::thread(boost::bind(&NamedPipeServer::run,this)));
+	std::shared_ptr<std::thread> dispatcher(new std::thread(&NamedPipeServer::run, this));
 	_threads.push_back(dispatcher);
 }
 
 void NamedPipeServer::JoinWorkers()
 {
-	size_t size=_threads.size();
-	for (std::size_t i = 0; i < size; ++i)
-		_threads[i]->join();
-	for (std::size_t i = 0; i < size; ++i)
-		_threads[i].reset();
+	size_t size = _threads.size();
+	for (auto thread : _threads)
+		thread->join();
 	_threads.clear();
 }
 
 void NamedPipeServer::Stop()
 {
-	_active=false;
-	size_t size;
-	if((size=_threads.size())>0)
-	{
-	this->JoinWorkers();
-	}
+	_active = false;
+	JoinWorkers();
 }
 
 NamedPipeServer::~NamedPipeServer(void)
 {
-	this->Stop();
-	while(!_clients.empty())
-	{
-		if(_clients.try_pop(_pipe))
-			delete _pipe;
-	}
+	Stop(); // Cleanup threead
+	_clients.clear();
 }

@@ -1,11 +1,12 @@
 #include "SimpleServer.h"
+#include <iostream>
 
-int main(int argc,char* argv[])
+int main(int argc, char* argv[])
 {
-		SimpleServer* s=new SimpleServer("NamedPipeTester");
-		s->Start();
-		boost::this_thread::sleep(boost::posix_time::milliseconds(10000));
-		delete s;
-		system("pause");
+	SimpleServer* s = new SimpleServer("NamedPipeTester");
+	s->Start();
+    std::cout << "Hit ENTER to quit..." << std::endl;
+	getchar();
+	delete s; // Stops on delete
 	return 0;
 }
